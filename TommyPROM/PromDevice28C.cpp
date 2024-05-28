@@ -5,9 +5,16 @@
 
 // IO lines for the EEPROM device control
 // Pins D2..D9 are used for the data bus.
+// Edited to fit different wiring ELIOT
 #define WE              A0
-#define CE              A1
-#define OE              A2
+#define CE              A2
+#define OE              A1
+
+// Lookup table to help reverse bit order in a byte
+// to reverse byte n do: (lookup[n&0b1111] << 4) | lookup[n>>4]
+static uint8_t lookup[16] = {
+0x0, 0x8, 0x4, 0xc, 0x2, 0xa, 0x6, 0xe,
+0x1, 0x9, 0x5, 0xd, 0x3, 0xb, 0x7, 0xf, };
 
 // Set the status of the device control pins
 static void enableChip()       { digitalWrite(CE, LOW); }
@@ -52,12 +59,12 @@ ERET PromDevice28C::disableSoftwareWriteProtect()
     enableChip();
     setDataBusMode(OUTPUT);
 
-    setByte(0xaa, 0x5555);
-    setByte(0x55, 0x2aaa);
-    setByte(0x80, 0x5555);
-    setByte(0xaa, 0x5555);
-    setByte(0x55, 0x2aaa);
-    setByte(0x20, 0x5555);
+    setByte(0x55, 0x5555);
+    setByte(0xaa, 0x2aaa);
+    setByte(0x01, 0x5555);
+    setByte(0x55, 0x5555);
+    setByte(0xaa, 0x2aaa);
+    setByte(0x04, 0x5555);
 
     setDataBusMode(INPUT);
     disableChip();
@@ -74,9 +81,9 @@ ERET PromDevice28C::enableSoftwareWriteProtect()
     enableChip();
     setDataBusMode(OUTPUT);
 
-    setByte(0xaa, 0x5555);
-    setByte(0x55, 0x2aaa);
-    setByte(0xa0, 0x5555);
+    setByte(0x55, 0x5555);
+    setByte(0xaa, 0x2aaa);
+    setByte(0x05, 0x5555);
 
     setDataBusMode(INPUT);
     disableChip();
@@ -84,9 +91,36 @@ ERET PromDevice28C::enableSoftwareWriteProtect()
     return RET_OK;
 }
 
+// Write the special six-byte code to erase entire EEPROM.
+ERET PromDevice28C::wipe() {
+
+    disableOutput();
+    disableWrite();
+    enableChip();
+    setDataBusMode(OUTPUT);
+
+    setByte(0x55, 0x5555);
+    setByte(0xaa, 0x2aaa);
+    setByte(0x01, 0x5555);
+    setByte(0x55, 0x5555);
+    setByte(0xaa, 0x2aaa);
+    setByte(0x08, 0x5555);
+
+    setDataBusMode(INPUT);
+    disableChip();
+    
+    // Wait for chip erase to finish
+    delay(25);
+    return RET_OK;
+}
+
 
 // BEGIN PRIVATE METHODS
 //
+
+byte PromDevice28C::bit_reverse_byte (byte byte_to_reverse) {
+  return (lookup[byte_to_reverse&0b1111] << 4) | lookup[byte_to_reverse>>4];
+}
 
 // Use the PromAddressDriver to set an address in the two address shift registers.
 void PromDevice28C::setAddress(uint32_t address)
@@ -109,6 +143,8 @@ byte PromDevice28C::readByte(uint32_t address)
     disableOutput();
     disableChip();
 
+    data = bit_reverse_byte(data);
+
     return data;
 }
 
@@ -116,6 +152,8 @@ byte PromDevice28C::readByte(uint32_t address)
 // Burn a byte to the chip and verify that it was written.
 bool PromDevice28C::burnByte(byte value, uint32_t address)
 {
+    value = bit_reverse_byte(value);
+    
     bool status = false;
 
     disableOutput();
@@ -144,6 +182,11 @@ bool PromDevice28C::burnBlock(byte data[], uint32_t len, uint32_t address)
     bool status = false;
     if (len == 0)  return true;
 
+    byte data_to_write[len];
+    for (uint32_t ix = 0; (ix < len); ix++) {
+        data_to_write[ix] = bit_reverse_byte(data[ix]);
+    }
+
     ++debugBlockWrites;
     disableOutput();
     disableWrite();
@@ -155,7 +198,7 @@ bool PromDevice28C::burnBlock(byte data[], uint32_t len, uint32_t address)
     for (uint32_t ix = 0; (ix < len); ix++)
     {
         setAddress(address + ix);
-        writeDataBus(data[ix]);
+        writeDataBus(data_to_write[ix]);
 
         delayMicroseconds(1);
         enableWrite();
@@ -163,7 +206,7 @@ bool PromDevice28C::burnBlock(byte data[], uint32_t len, uint32_t address)
         disableWrite();
     }
 
-    status = waitForWriteCycleEnd(data[len - 1]);
+    status = waitForWriteCycleEnd(data_to_write[len - 1]);
     disableChip();
 
     if (!status) {

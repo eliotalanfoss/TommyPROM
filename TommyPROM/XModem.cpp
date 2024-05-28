@@ -2,14 +2,6 @@
 #include "XModem.h"
 #include "CmdStatus.h"
 
-// The original TommyPROM code used XModem CRC protocol but this requires parameters to be
-// changed for the host communication program.  The default is now to use basic XModem
-// with the 8-bit checksum instead of the 16-bit CRC error checking.  This shouldn't
-// matter because communication errors aren't likely to happen on a 3 foot USB cable like
-// they did over the long distance dail-up lines that XModem was designed for.  Uncomment
-// the XMODEM_CRC_PROTOCOL line below to restore the original XMODEM CRC support.
-//#define XMODEM_CRC_PROTOCOL
-
 enum
 {
     // XMODEM control characters.
@@ -141,17 +133,30 @@ bool XModem::SendFile(uint32_t address, uint32_t fileSize)
 
     while (bytesSent < fileSize)
     {
-        SendPacket(address, seq++);
-        address += PKTLEN;
+        SendPacket(address, seq++);  
 
         rxChar = GetChar(5000);
         if (rxChar != XMDM_ACK)
         {
-            cmdStatus.error("Expected XModem ACK.");
-            cmdStatus.setValueDec(0, "char", rxChar);
-            return false;
+            if (rxChar == XMDM_NAK) {
+                seq--;
+            }
+            else if (rxChar == XMDM_CAN) {
+                cmdStatus.info("Send File Cancelled by Receiver");
+                return false;
+            }
+            else
+            {
+                cmdStatus.error("Expected XModem ACK.");
+                cmdStatus.setValueDec(0, "char", rxChar);
+                return false;
+            }
         }
-        bytesSent += PKTLEN;
+        else
+        {
+            address += PKTLEN;
+            bytesSent += PKTLEN;
+        }
     }
 
     // Signal end of transfer and process the ACK
@@ -271,9 +276,9 @@ int XModem::ReceivePacket(uint8_t buffer[], unsigned bufferSize, uint8_t seq, ui
 
 #ifdef XMODEM_CRC_PROTOCOL
     rxCrc  = ((uint16_t) GetChar()) << 8;
-    rxCrc |= GetChar();
+    rxCrc |= (uint16_t) GetChar();
 #else
-    rxCrc = GetChar();
+    rxCrc = (uint16_t) GetChar();
 #endif
 
     // At this point in the code, there should not be anything in the receive buffer
@@ -336,6 +341,18 @@ int XModem::ReceivePacket(uint8_t buffer[], unsigned bufferSize, uint8_t seq, ui
     else
     {
         // The data is good.  Process the packet then ACK it to the sender.
+
+        // ELIOT if address would overflow, truncate the buffersize
+        if ((destAddr + (bufferSize - 1)) > promDevice.end()) {
+            if (promDevice.end() < destAddr) {
+                bufferSize = 0;
+            }
+            else {
+                bufferSize = promDevice.end() - destAddr + 1;
+            }
+            cmdStatus.info("Sent File was bigger than EEPROM, File was truncated to fit");
+        }
+        
         if (!promDevice.writeData(buffer, bufferSize, destAddr))
         {
             cmdStatus.error("Write failed");

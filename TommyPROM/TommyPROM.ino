@@ -115,12 +115,14 @@ enum {
     CMD_READ,
     CMD_UNLOCK,
     CMD_WRITE,
+    CMD_WIPE,
     CMD_ZAP,
 
     CMD_SCAN,
     CMD_TEST,
     CMD_PATTERN_FILL,
-    CMD_LAST_STATUS
+    CMD_LAST_STATUS,
+    CMD_BYPASS,
 };
 
 
@@ -176,6 +178,7 @@ byte parseCommand(char c)
         case 'r':  cmd = CMD_READ;      break;
         case 'u':  cmd = CMD_UNLOCK;    break;
         case 'w':  cmd = CMD_WRITE;     break;
+        case 'x':  cmd = CMD_WIPE;      break;
         case 'z':  cmd = CMD_ZAP;       break;
 
         case 's':  cmd = CMD_SCAN;      break;
@@ -338,7 +341,7 @@ bool checkForBreak()
 word checksumBlock(uint32_t start, uint32_t end)
 {
     word checksum = 0;
-#if 1
+#ifndef XMODEM_CRC_PROTOCOL
     for (uint32_t addr = start; (addr <= end); addr += 2)
     {
         word w = prom.readData(addr);
@@ -347,7 +350,7 @@ word checksumBlock(uint32_t start, uint32_t end)
         checksum += w;
     }
 #else
-    uint16_t crc = 0xffff;
+    uint16_t crc = 0x0000; //ELIOT change to initial 0 instead of all 1s (0xffff)
     for (uint32_t addr = start; (addr <= end); addr++)
     {
         crc = crc ^ (uint16_t(prom.readData(addr)) << 8);
@@ -508,6 +511,11 @@ void pokeBytes(char * pCursor)
     while (((val = getHex32(pCursor)) != unspec) && (byteCtr < BLOCK_SIZE))
     {
         data[byteCtr++] = byte(val);
+        // ELIOT check to ensure address does not overflow
+        if ((start + byteCtr - 1) > prom.end()) {
+            cmdStatus.error("Byte sequence would go past end of EEPROM!");
+            return;
+        }
     }
 
     if (byteCtr > 0)
@@ -565,6 +573,12 @@ void zapTest(uint32_t start)
         0x7f, 0xbf, 0xdf, 0xef, 0xf7, 0xfb, 0xfd, 0xfe,
         0x00, 0xff, 0x55, 0xaa, '0',  '1',  '2',  '3'
     };
+
+    // ELIOT make sure test data fits on EEPROM
+    if ((start + 32) > prom.end()) {
+        cmdStatus.error("Too close to end of EEPROM!");
+        return;
+    }
 
     if (!prom.writeData(testData, sizeof(testData), start))
     {
@@ -701,6 +715,9 @@ void testAddr(uint32_t addr)
  *   00010  00 01 12 13 14 15 16 17  00 01 1a 1b 1c 1d 1e 1f
  *   ...
  *   3fff0  03 ff f2 f3 f4 f5 f6 f7  03 ff fa fb fc fd fe ff
+ * 
+ *  Note: for a 32KB prom, this would lead to a 16 bit CRC
+ *  checksum of e73a
  */
 void patternFill()
 {
@@ -709,7 +726,7 @@ void patternFill()
 
     Serial.print("Filling with pattern from 0 to ");
     printHex32(prom.end());
-    Serial.print("...");
+    Serial.println("...");
 
     for (uint32_t addr = 0; (addr <= prom.end()); addr += BLOCK_SIZE)
     {
@@ -781,6 +798,16 @@ void loop()
         cmdStatus.clear();
     }
 
+    // ELIOT check that start and end address are withing PROM
+    if ((start != unspec) && (start > prom.end())) {
+        cmdStatus.error("Starting address is too large.  Must be within EEPROM size");
+        cmd = CMD_BYPASS;
+    }
+    else if ((end != unspec) && (end > prom.end())) {
+        cmdStatus.error("Ending address is too large.  Must be within EEPROM size");
+        cmd = CMD_BYPASS;
+    }
+
     switch (cmd)
     {
     case CMD_BLANK:
@@ -802,7 +829,16 @@ void loop()
 
     case CMD_DUMP:
         start = if_unspec(start, dump_next);
-        dump_next = dumpBlock(start, if_unspec(end, start + 0xff));
+        end = if_unspec(end, start + 0xff);
+        // ELIOT don't dump past EEPROM END!
+        if (end > prom.end()) {
+          end = prom.end();
+        }
+        dump_next = dumpBlock(start, end);
+        // Overflow dump_next
+        if (dump_next > prom.end()) {
+            dump_next = 0;
+        }
         break;
 
     case CMD_ERASE:
@@ -847,6 +883,9 @@ void loop()
         end = if_unspec(end, prom.end());
         if (xmodem.SendFile(start, end - start + 1))
         {
+            // ELIOT wait a bit to let other computer catch up
+            delay(100);
+            Serial.print(F("\n"));
             cmdStatus.info("Send complete.");
             cmdStatus.setValueDec(0, "NumBytes", end - start + 1);
         }
@@ -863,12 +902,26 @@ void loop()
         numBytes = xmodem.ReceiveFile(start);
         if (numBytes)
         {
+            // ELIOT wait a bit to let other computer catch up
+            delay(100);
+            Serial.print(F("\n"));
             cmdStatus.info("Success writing to EEPROM device.");
             cmdStatus.setValueDec(0, "NumBytes", numBytes);
         }
         else
         {
             xmodem.Cancel();
+        }
+        break;
+
+    case CMD_WIPE:
+        Serial.print(F("Clearing entire EEPROM, are you sure? y/n:"));
+        readLine(line, sizeof(line));
+        Serial.println();
+        if (line[0] == 'y') {
+            printRetStatus(prom.wipe());
+        } else {
+            cmdStatus.info("Chip erase canceled.");
         }
         break;
 
@@ -895,6 +948,11 @@ void loop()
         Serial.println(F("Status of last command:"));
         break;
 
+    // ELIOT bypass command execution
+    case CMD_BYPASS:
+        Serial.println(F("bypass")); //TEMP
+        break;
+
     default:
         Serial.print(F("TommyPROM "));
         Serial.print(MY_VERSION);
@@ -913,6 +971,7 @@ void loop()
         Serial.println(F("  Rsssss eeeee    - Read from device and save to XMODEM CRC file"));
         Serial.println(F("  U               - Unlock (disable) device Software Data Protection"));
         Serial.println(F("  Wsssss          - Write to device from XMODEM CRC file"));
+        Serial.println(F("  X               - Erase entire device"));
         Serial.println(F("  Zsssss          - Zap (burn) a 32 byte test pattern"));
 #ifdef ENABLE_DEBUG_COMMANDS
         Serial.println();

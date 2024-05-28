@@ -103,19 +103,19 @@ void PromDevice::printDebugStats() {
 // on pins D2..D9.
 void PromDevice::setDataBusMode(uint8_t mode)
 {
-    // On the Uno and Nano, D2..D9 maps to the upper 6 bits of port D and the
-    // lower 2 bits of port B.
+    // On the Uno and Nano, D5..D12 maps to the upper 3 bits of port D and the
+    // lower 5 bits of port B.
     if (mode == OUTPUT)
     {
-        DDRB |= 0x03;
-        DDRD |= 0xfc;
+        DDRB |= 0x1f;
+        DDRD |= 0xe0;
     }
         else
     {
-        DDRB &= 0xfc;
-        DDRD &= 0x03;
-        PORTB |= 0x03;  // set pullup resistors
-        PORTD |= 0xfc;
+        DDRB &= 0xe0;
+        DDRD &= 0x1f;
+        PORTB |= 0x1f;  // set pullup resistors
+        PORTD |= 0xe0;
     }
 }
 
@@ -124,7 +124,7 @@ void PromDevice::setDataBusMode(uint8_t mode)
 // before calling this or no useful data will be returned.
 byte PromDevice::readDataBus()
 {
-    return (PINB << 6) | (PIND >> 2);
+    return (PINB << 3) | (PIND >> 5);
 }
 
 
@@ -132,6 +132,6 @@ byte PromDevice::readDataBus()
 // before calling this or no data will be written.
 void PromDevice::writeDataBus(byte data)
 {
-     PORTB = (PORTB & 0xfc) | (data >> 6);
-     PORTD = (PORTD & 0x03) | (data << 2);
+     PORTB = (PORTB & 0xe0) | (data >> 3);
+     PORTD = (PORTD & 0x1f) | (data << 5);
 }

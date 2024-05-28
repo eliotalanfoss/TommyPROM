@@ -23,8 +23,10 @@ class PromDevice28C : public PromDevice
     const char * getName() { return "28C series EEPROM"; }
     ERET disableSoftwareWriteProtect();
     ERET enableSoftwareWriteProtect();
+    ERET wipe();
 
   protected:
+    byte bit_reverse_byte(byte byte_to_reverse);
     void setAddress(uint32_t address);
     byte readByte(uint32_t address);
     bool burnByte(byte value, uint32_t address);
